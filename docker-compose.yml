@@ -1,0 +1,155 @@
+# Deployment compose — pulls pre-built images from ghcr.io and routes them
+# through Traefik with automatic HTTPS via Let's Encrypt.
+#
+# Quick start
+# ───────────
+#   1. cp .env.local.example .env.local    # fill in credentials
+#   2. docker compose --env-file .env.local pull
+#   3. docker compose --env-file .env.local up -d
+#
+# Endpoints once running:
+#   Web portal : https://<DOMAIN>/insighta/
+#   Backend API: https://<DOMAIN>/insighta/api/  (and /insighta/auth/, /insighta/health)
+#
+# Run a CLI command:
+#   docker compose --env-file .env.local run --rm cli login
+#   docker compose --env-file .env.local run --rm cli profiles list
+
+services:
+  # ── Traefik reverse proxy ────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.3
+    container_name: insighta-traefik
+    restart: unless-stopped
+    command:
+      - "--log.level=INFO"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=insighta-net"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Redirect all HTTP → HTTPS (Traefik handles ACME challenges before redirecting)
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      # Let's Encrypt
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "letsencrypt:/letsencrypt"
+    networks:
+      - insighta-net
+
+  # ── Backend API ─────────────────────────────────────────────────────────────
+  backend:
+    image: ghcr.io/${GHCR_OWNER}/insighta-backend:latest
+    container_name: insighta-backend
+    pull_policy: always
+    # Ports are intentionally not exposed to the host — Traefik is the only
+    # entry point. Uncomment below if you need direct access for debugging.
+    # ports:
+    #   - "8080:8080"
+    environment:
+      PORT: 8080
+      DB_PATH: /app/data/insighta.db
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      # For the web portal flow GitHub redirects to the web portal's /auth/callback.
+      # The CLI overrides this with its own local callback at runtime.
+      GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI}
+      JWT_SECRET: ${JWT_SECRET}
+    volumes:
+      - backend-data:/app/data
+    networks:
+      - insighta-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      # Route API paths, backend auth endpoints, and health to this container.
+      # /insighta/auth/callback is intentionally excluded — that goes to the web portal.
+      - "traefik.http.routers.insighta-backend.rule=Host(`${DOMAIN}`) && (PathPrefix(`/insighta/api`) || PathPrefix(`/insighta/auth/github`) || Path(`/insighta/auth/refresh`) || Path(`/insighta/auth/logout`) || Path(`/insighta/auth/me`) || Path(`/insighta/health`))"
+      - "traefik.http.routers.insighta-backend.entrypoints=websecure"
+      - "traefik.http.routers.insighta-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.insighta-backend.middlewares=strip-insighta-prefix"
+      - "traefik.http.routers.insighta-backend.priority=20"
+      - "traefik.http.middlewares.strip-insighta-prefix.stripprefix.prefixes=/insighta"
+      - "traefik.http.services.insighta-backend.loadbalancer.server.port=8080"
+
+  # ── Web portal ──────────────────────────────────────────────────────────────
+  web:
+    image: ghcr.io/${GHCR_OWNER}/insighta-web:latest
+    container_name: insighta-web
+    pull_policy: always
+    # ports:
+    #   - "8069:3000"
+    environment:
+      WEB_PORT: 3000
+      # Internal container-to-container calls
+      API_URL: http://backend:8080
+      # Browser-facing backend URL (used for OAuth redirects)
+      PUBLIC_API_URL: ${PUBLIC_API_URL}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      SESSION_HASH_KEY: ${SESSION_HASH_KEY}
+      SESSION_BLOCK_KEY: ${SESSION_BLOCK_KEY}
+      CSRF_AUTH_KEY: ${CSRF_AUTH_KEY}
+      ENV: ${ENV:-production}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - insighta-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      # Catch-all for /insighta — everything not matched by the backend router above.
+      - "traefik.http.routers.insighta-web.rule=Host(`${DOMAIN}`) && PathPrefix(`/insighta`)"
+      - "traefik.http.routers.insighta-web.entrypoints=websecure"
+      - "traefik.http.routers.insighta-web.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.insighta-web.middlewares=strip-insighta-prefix"
+      - "traefik.http.routers.insighta-web.priority=10"
+      - "traefik.http.services.insighta-web.loadbalancer.server.port=3000"
+
+  # ── CLI ─────────────────────────────────────────────────────────────────────
+  # Not a persistent service — image is pulled with the rest of the stack so it's
+  # always ready to use. Run commands on demand:
+  #   docker compose --env-file .env.local run --rm cli <command>
+  # Credentials are persisted in ./cli-data across runs.
+  cli:
+    image: ghcr.io/${GHCR_OWNER}/insighta-cli:latest
+    container_name: insighta-cli
+    pull_policy: always
+    restart: "no"
+    environment:
+      API_URL: http://backend:8080
+      PUBLIC_API_URL: ${PUBLIC_API_URL}
+    volumes:
+      - ./cli-data:/root/.insighta
+    networks:
+      - insighta-net
+    stdin_open: true
+    tty: true
+
+volumes:
+  backend-data:
+  letsencrypt:
+
+networks:
+  insighta-net:
+    driver: bridge
