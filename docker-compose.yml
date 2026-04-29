@@ -152,4 +152,5 @@ volumes:
 
 networks:
   insighta-net:
+    name: insighta-net # explicit name — avoids the docker-compose project prefix
     driver: bridge
