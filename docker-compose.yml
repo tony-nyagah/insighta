@@ -105,6 +105,7 @@ services:
       SESSION_BLOCK_KEY: ${SESSION_BLOCK_KEY}
       CSRF_AUTH_KEY: ${CSRF_AUTH_KEY}
       ENV: ${ENV:-production}
+      BASE_PATH: /insighta
     depends_on:
       backend:
         condition: service_healthy
