@@ -1,0 +1,30 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-compose:
+    name: Validate docker-compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+        env:
+          GHCR_OWNER: test
+          DOMAIN: localhost
+          ACME_EMAIL: test@example.com
+          GITHUB_CLIENT_ID: test-client-id
+          GITHUB_CLIENT_SECRET: test-client-secret
+          GITHUB_REDIRECT_URI: http://localhost/insighta/auth/callback
+          PUBLIC_API_URL: http://localhost/insighta
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          SESSION_HASH_KEY: test-session-hash-key-32-bytes-ok!
+          SESSION_BLOCK_KEY: test-block-key-32-bytes-change!!
+          CSRF_AUTH_KEY: test-csrf-auth-key-32-bytes-here!
+          ENABLE_TEST_AUTH: "true"

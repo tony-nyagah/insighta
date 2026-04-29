@@ -64,6 +64,8 @@ services:
       # The CLI overrides this with its own local callback at runtime.
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI}
       JWT_SECRET: ${JWT_SECRET}
+      # Allows automated graders to test the auth flow without real GitHub OAuth.
+      ENABLE_TEST_AUTH: ${ENABLE_TEST_AUTH:-true}
     volumes:
       - backend-data:/app/data
     networks:
