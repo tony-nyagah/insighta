@@ -66,8 +66,14 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       # Allows automated graders to test the auth flow without real GitHub OAuth.
       ENABLE_TEST_AUTH: ${ENABLE_TEST_AUTH:-true}
+      # Optional automatic seeding: set SEED_ON_START=true and provide a seed
+      # file path (mounted into /app/data/seeds). Useful to populate test users.
+      SEED_ON_START: ${SEED_ON_START:-false}
+      SEED_FILE: ${SEED_FILE:-/app/data/seeds/1seed.json}
     volumes:
       - backend-data:/app/data
+      # Mount a host-side seeds directory (create ./insighta-backend/seeds)
+      - ./insighta-backend/seeds:/app/data/seeds:ro
     networks:
       - insighta-net
     healthcheck:
